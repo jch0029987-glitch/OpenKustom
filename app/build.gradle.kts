@@ -32,4 +32,5 @@ android {
 dependencies {
     implementation("org.luaj:luaj-jse:3.0.1")
     implementation("androidx.core:core-ktx:1.15.0")
+    implementation("org.json:json:20240303") 
 }

@@ -1,83 +1,98 @@
 package com.openkustom.lwp
 
 import android.app.Activity
-import android.app.WallpaperManager
-import android.content.ComponentName
-import android.content.Intent
 import android.graphics.Color
 import android.os.Bundle
 import android.view.Gravity
 import android.widget.*
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 
 class MainActivity : Activity() {
+    private val jsonFile = File("/sdcard/OpenKustom/ui.json")
+    private var layers = JSONArray()
+    private lateinit var container: LinearLayout
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
-        val root = LinearLayout(this).apply {
+        
+        val root = ScrollView(this).apply { setBackgroundColor(Color.parseColor("#0A0B10")) }
+        container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
-            setBackgroundColor(Color.parseColor("#0F111A"))
-            gravity = Gravity.CENTER
-            setPadding(60, 60, 60, 60)
+            setPadding(50, 50, 50, 50)
         }
+        root.addView(container)
 
-        val title = TextView(this).apply {
-            text = "OPEN KUSTOM EDITOR"
-            textSize = 28f
-            setTextColor(Color.parseColor("#00E5FF"))
-            setPadding(0, 0, 0, 50)
-        }
-
-        // INPUT FIELD FOR TEXT COMPONENTS
-        val inputField = EditText(this).apply {
-            hint = "Enter text for wallpaper"
-            setHintTextColor(Color.GRAY)
-            setTextColor(Color.WHITE)
-            setBackgroundColor(Color.parseColor("#1A1C2E"))
-        }
-
-        val btnAddText = Button(this).apply {
-            text = "INJECT TEXT COMPONENT"
+        val btnAdd = Button(this).apply {
+            text = "+ ADD NEW TEXT LAYER"
             setOnClickListener {
-                val content = inputField.text.toString()
-                if (content.isNotEmpty()) {
-                    addComponent("text", "{ type=\"text\", content=\"$content\", x=100, y=500, size=60, color=\"#FFFFFF\" }")
-                    inputField.text.clear()
+                val newObj = JSONObject().apply {
+                    put("type", "text"); put("content", "New Layer")
+                    put("x", 100); put("y", 600); put("size", 60); put("color", "#00E5FF")
                 }
+                layers.put(newObj)
+                saveAndRefresh()
             }
         }
-
-        val btnSetWallpaper = Button(this).apply {
-            text = "SET LIVE WALLPAPER"
-            setPadding(0, 50, 0, 0)
-            setOnClickListener {
-                val intent = Intent(WallpaperManager.ACTION_CHANGE_LIVE_WALLPAPER).apply {
-                    putExtra(WallpaperManager.EXTRA_LIVE_WALLPAPER_COMPONENT, 
-                        ComponentName(this@MainActivity, LuaWallpaperService::class.java))
-                }
-                startActivity(intent)
-            }
-        }
-
-        root.addView(title)
-        root.addView(inputField)
-        root.addView(btnAddText)
-        root.addView(btnSetWallpaper)
+        
+        container.addView(btnAdd)
+        loadJson()
+        refreshList()
         setContentView(root)
     }
 
-    private fun addComponent(type: String, luaCode: String) {
-        val file = File("/sdcard/OpenKustom/logic.lua")
-        if (!file.exists()) {
-            file.writeText("local ui = {}\nreturn ui")
+    private fun loadJson() {
+        if (jsonFile.exists()) layers = JSONArray(jsonFile.readText())
+        else jsonFile.writeText("[]")
+    }
+
+    private fun saveAndRefresh() {
+        jsonFile.writeText(layers.toString(2))
+        refreshList()
+    }
+
+    private fun refreshList() {
+        // Keep the "Add" button, clear rest
+        while (container.childCount > 1) container.removeViewAt(1)
+
+        for (i in 0 until layers.length()) {
+            val layer = layers.getJSONObject(i)
+            val card = LinearLayout(this).apply {
+                orientation = LinearLayout.VERTICAL
+                setPadding(20, 20, 20, 20)
+                setBackgroundColor(Color.parseColor("#1A1C2E"))
+            }
+
+            val title = TextView(this).apply { 
+                text = "Layer $i: ${layer.optString("type")}"
+                setTextColor(Color.WHITE)
+            }
+            
+            val xLabel = TextView(this).apply { text = "X: ${layer.getInt("x")}"; setTextColor(Color.GRAY) }
+            val xSlider = SeekBar(this).apply {
+                max = 1080
+                progress = layer.getInt("x")
+                setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                    override fun onProgressChanged(s: SeekBar?, p: Int, b: Boolean) {
+                        if (b) {
+                            layer.put("x", p)
+                            xLabel.text = "X: $p"
+                            jsonFile.writeText(layers.toString()) // Fast save
+                        }
+                    }
+                    override fun onStartTrackingTouch(s: SeekBar?) {}
+                    override fun onStopTrackingTouch(s: SeekBar?) {}
+                })
+            }
+
+            card.addView(title); card.addView(xLabel); card.addView(xSlider)
+            container.addView(Space(this, 30))
+            container.addView(card)
         }
-        
-        val current = file.readText()
-        if (current.contains("local ui = {")) {
-            val updated = current.replace("local ui = {", "local ui = {\n    $luaCode,")
-            file.writeText(updated)
-            Toast.makeText(this, "Added $type to wallpaper!", Toast.LENGTH_SHORT).show()
-        }
+    }
+
+    private fun Space(context: Activity, h: Int) = View(context).apply { 
+        layoutParams = LinearLayout.LayoutParams(1, h) 
     }
 }
