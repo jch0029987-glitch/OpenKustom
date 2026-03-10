@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">OpenKustom</string>
+    <string name="wp_desc">Open Source Lua-based Live Wallpaper</string>
+</resources>
