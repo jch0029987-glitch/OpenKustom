@@ -2,47 +2,25 @@ package com.openkustom.lwp
 
 import android.graphics.*
 import android.os.BatteryManager
-import android.os.Handler
-import android.os.Looper
 import android.service.wallpaper.WallpaperService
 import android.view.MotionEvent
-import android.view.SurfaceHolder
 import android.view.WindowInsets
 import org.luaj.vm2.LuaValue
-import org.luaj.vm2.lib.ZeroArgFunction
 import org.luaj.vm2.lib.jse.JsePlatform
+import java.io.File
 
 class LuaWallpaperService : WallpaperService() {
-    // New Android 16 API allows identifying specific instances (Home vs Lock)
     override fun onCreateEngine(): Engine = LuaEngine()
 
     inner class LuaEngine : Engine() {
         private val globals = JsePlatform.standardGlobals()
-        private val handler = Handler(Looper.getMainLooper())
-        private val drawRunnable = Runnable { drawFrame() }
-        private var isVisible = false
-        
-        // Edge-to-Edge Insets
         private var topInset = 0
         private var bottomInset = 0
 
         init {
-            setupLuaGlobals()
-        }
-
-        private fun setupLuaGlobals() {
-            val androidLib = org.luaj.vm2.LuaTable()
-            
-            // Example: $bi(level)$ equivalent
-            androidLib.set("battery", object : ZeroArgFunction() {
-                override fun call(): LuaValue {
-                    val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
-                    return LuaValue.valueOf(bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY))
-                }
-            })
-
-            globals.set("android", androidLib)
-            // Initializing touch state
+            // Initialize basic touch globals
+            globals.set("touch_x", LuaValue.valueOf(0.0))
+            globals.set("touch_y", LuaValue.valueOf(0.0))
             globals.set("is_touching", LuaValue.valueOf(false))
         }
 
@@ -50,11 +28,6 @@ class LuaWallpaperService : WallpaperService() {
             val systemBars = insets.getInsets(WindowInsets.Type.systemBars())
             topInset = systemBars.top
             bottomInset = systemBars.bottom
-        }
-
-        override fun onVisibilityChanged(visible: Boolean) {
-            this.isVisible = visible
-            if (visible) drawFrame() else handler.removeCallbacks(drawRunnable)
         }
 
         override fun onTouchEvent(event: MotionEvent) {
@@ -69,43 +42,48 @@ class LuaWallpaperService : WallpaperService() {
         }
 
         private fun drawFrame() {
-            val holder = surfaceHolder
-            val canvas = holder.lockCanvas() ?: return
-            
+            val canvas = surfaceHolder.lockCanvas() ?: return
             try {
-                // RUN LUA SCRIPT (Mocking a script that returns a color)
-                val luaScript = "if is_touching then return '#FF5722' else return '#121212' end"
-                val hexColor = globals.load(luaScript).call().tojstring()
+                // Path to your script in Termux/Storage
+                val scriptFile = File("/sdcard/OpenKustom/logic.lua")
                 
-                // DRAWING
-                canvas.drawColor(Color.parseColor(hexColor))
-                
-                val paint = Paint().apply {
-                    color = Color.WHITE
-                    textSize = 64f
-                    isAntiAlias = true
+                // Fallback script if file is missing
+                val luaCode = if (scriptFile.exists()) {
+                    scriptFile.readText()
+                } else {
+                    "return '#121212'"
                 }
 
-                // Respecting Android 16 Insets
-                canvas.drawText("OpenKustom", 100f, topInset + 100f, paint)
+                // Inject current battery level into Lua
+                val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
+                globals.set("battery", LuaValue.valueOf(bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)))
+
+                // Execute Lua and get the background color
+                val result = globals.load(luaCode).call()
+                val hexColor = result.tojstring()
                 
+                canvas.drawColor(Color.parseColor(hexColor))
+
+                // Optional: Draw a circle where you touch
                 if (globals.get("is_touching").toboolean()) {
-                    val tx = globals.get("touch_x").tofloat()
-                    val ty = globals.get("touch_y").tofloat()
-                    canvas.drawCircle(tx, ty, 80f, paint)
+                    val paint = Paint().apply { color = Color.WHITE }
+                    canvas.drawCircle(
+                        globals.get("touch_x").tofloat(), 
+                        globals.get("touch_y").tofloat(), 
+                        80f, 
+                        paint
+                    )
                 }
 
             } catch (e: Exception) {
-                val errorPaint = Paint().apply { color = Color.RED; textSize = 40f }
-                canvas.drawText("Lua Error: ${e.message}", 50f, 200f, errorPaint)
+                canvas.drawColor(Color.DKGRAY) // Indicate error
             } finally {
-                holder.unlockCanvasAndPost(canvas)
+                surfaceHolder.unlockCanvasAndPost(canvas)
             }
         }
 
-        override fun onDestroy() {
-            super.onDestroy()
-            handler.removeCallbacks(drawRunnable)
+        override fun onVisibilityChanged(visible: Boolean) {
+            if (visible) drawFrame()
         }
     }
 }
