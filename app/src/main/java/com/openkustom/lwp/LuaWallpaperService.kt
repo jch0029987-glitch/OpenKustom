@@ -1,13 +1,10 @@
 package com.openkustom.lwp
 
 import android.graphics.*
-import android.os.BatteryManager
 import android.os.Handler
 import android.os.Looper
 import android.service.wallpaper.WallpaperService
-import android.view.MotionEvent
 import org.json.JSONArray
-import org.json.JSONObject
 import org.luaj.vm2.LuaTable
 import org.luaj.vm2.LuaValue
 import org.luaj.vm2.lib.jse.JsePlatform
@@ -22,8 +19,8 @@ class LuaWallpaperService : WallpaperService() {
         private val startTime = System.currentTimeMillis()
         private var isVisible = false
         
-        private val fillPaint = Paint().apply { isAntiAlias = true }
-        private val textPaint = Paint().apply { isAntiAlias = true; color = Color.WHITE }
+        private val fillPaint = Paint().apply { isAntiAlias = true; style = Paint.Style.FILL }
+        private val textPaint = Paint().apply { isAntiAlias = true; color = Color.WHITE; typeface = Typeface.MONOSPACE }
 
         private val tick = Runnable {
             if (isVisible) {
@@ -37,6 +34,7 @@ class LuaWallpaperService : WallpaperService() {
             if (visible) handler.post(tick) else handler.removeCallbacksAndMessages(null)
         }
 
+        // Converts JSON to LuaTable so the Lua script can easily manipulate it
         private fun jsonToLuaTable(jsonArray: JSONArray): LuaTable {
             val table = LuaTable()
             for (i in 0 until jsonArray.length()) {
@@ -60,49 +58,64 @@ class LuaWallpaperService : WallpaperService() {
         private fun drawFrame() {
             val canvas = surfaceHolder.lockCanvas() ?: return
             try {
-                canvas.drawColor(Color.parseColor("#0A0B10"))
+                canvas.drawColor(Color.parseColor("#0A0B10")) // Deep Background
                 
                 val elapsed = (System.currentTimeMillis() - startTime) / 1000.0
                 globals.set("time", LuaValue.valueOf(elapsed))
                 globals.set("width", LuaValue.valueOf(canvas.width.toDouble()))
                 globals.set("height", LuaValue.valueOf(canvas.height.toDouble()))
                 
-                // Load JSON Data
+                // Load JSON Data from storage
                 val jsonFile = File("/sdcard/OpenKustom/ui.json")
                 if (jsonFile.exists()) {
                     val jsonArray = JSONArray(jsonFile.readText())
                     globals.set("ui_data", jsonToLuaTable(jsonArray))
+                } else {
+                    globals.set("ui_data", LuaTable())
                 }
 
-                // Run the Lua Logic
+                // Execute logic.lua to get the final render table
                 val script = File("/sdcard/OpenKustom/logic.lua")
                 if (script.exists()) {
                     val result = globals.load(script.readText()).call()
                     if (result.istable()) {
-                        val table = result.checktable()
-                        for (i in 1..table.length()) {
-                            val l = table.get(i)
-                            val type = l.get("type").optjstring("none")
-                            val color = Color.parseColor(l.get("color").optjstring("#FFFFFF"))
-                            val x = l.get("x").tofloat()
-                            val y = l.get("y").tofloat()
+                        val renderTable = result.checktable()
+                        
+                        for (i in 1..renderTable.length()) {
+                            val layer = renderTable.get(i)
+                            val type = layer.get("type").optjstring("none")
+                            
+                            // Safe Color Parsing
+                            val colorStr = layer.get("color").optjstring("#FFFFFF")
+                            val colorInt = try { Color.parseColor(colorStr) } catch(e: Exception) { Color.WHITE }
+                            
+                            val x = layer.get("x").tofloat()
+                            val y = layer.get("y").tofloat()
 
                             when (type) {
                                 "rect" -> {
-                                    fillPaint.color = color
-                                    canvas.drawRect(x, y, x + l.get("w").tofloat(), y + l.get("h").tofloat(), fillPaint)
+                                    fillPaint.color = colorInt
+                                    val w = layer.get("w").tofloat()
+                                    val h = layer.get("h").tofloat()
+                                    canvas.drawRect(x, y, x + w, y + h, fillPaint)
+                                }
+                                "circle" -> {
+                                    fillPaint.color = colorInt
+                                    val r = layer.get("radius").tofloat()
+                                    canvas.drawCircle(x, y, r, fillPaint)
                                 }
                                 "text" -> {
-                                    textPaint.color = color
-                                    textPaint.textSize = l.get("size").tofloat()
-                                    canvas.drawText(l.get("content").optjstring(""), x, y, textPaint)
+                                    textPaint.color = colorInt
+                                    textPaint.textSize = layer.get("size").tofloat()
+                                    canvas.drawText(layer.get("content").optjstring(""), x, y, textPaint)
                                 }
                             }
                         }
                     }
                 }
             } catch (e: Exception) {
-                canvas.drawText("ERR: ${e.message}", 50f, 200f, textPaint.apply { color = Color.YELLOW })
+                // Visual error reporting on the wallpaper
+                canvas.drawText("LUA ERR: ${e.message}", 50f, 300f, textPaint.apply { color = Color.RED; textSize = 40f })
             } finally {
                 surfaceHolder.unlockCanvasAndPost(canvas)
             }
