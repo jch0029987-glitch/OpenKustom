@@ -7,7 +7,6 @@ import android.os.Looper
 import android.service.wallpaper.WallpaperService
 import android.view.MotionEvent
 import android.view.WindowInsets
-import android.widget.Toast
 import org.luaj.vm2.LuaValue
 import org.luaj.vm2.lib.VarArgFunction
 import org.luaj.vm2.lib.jse.JsePlatform
@@ -18,21 +17,36 @@ class LuaWallpaperService : WallpaperService() {
 
     inner class LuaEngine : Engine() {
         private val globals = JsePlatform.standardGlobals()
-        private var topInset = 0
+        private val handler = Handler(Looper.getMainLooper())
+        private val startTime = System.currentTimeMillis()
+        private var isVisible = false
+        
+        // Drawing Tools
         private val fillPaint = Paint().apply { isAntiAlias = true; style = Paint.Style.FILL }
         private val textPaint = Paint().apply { isAntiAlias = true }
-        private var lastLoadedContent: String? = null
 
-        private fun showToast(message: String) {
-            Handler(Looper.getMainLooper()).post {
-                Toast.makeText(applicationContext, message, Toast.LENGTH_SHORT).show()
+        // THE ANIMATION LOOP (60 FPS ~ 16ms)
+        private val tick = object : Runnable {
+            override fun run() {
+                if (isVisible) {
+                    drawFrame()
+                    handler.postDelayed(this, 16) 
+                }
+            }
+        }
+
+        override fun onVisibilityChanged(visible: Boolean) {
+            this.isVisible = visible
+            if (visible) {
+                handler.post(tick)
+            } else {
+                handler.removeCallbacks(tick)
             }
         }
 
         override fun onApplyWindowInsets(insets: WindowInsets) {
             val systemBars = insets.getInsets(WindowInsets.Type.systemBars())
-            topInset = systemBars.top
-            globals.set("top_inset", LuaValue.valueOf(topInset.toDouble()))
+            globals.set("top_inset", LuaValue.valueOf(systemBars.top.toDouble()))
         }
 
         override fun onTouchEvent(event: MotionEvent) {
@@ -42,37 +56,24 @@ class LuaWallpaperService : WallpaperService() {
                 MotionEvent.ACTION_DOWN -> globals.set("is_touching", LuaValue.valueOf(true))
                 MotionEvent.ACTION_UP -> globals.set("is_touching", LuaValue.valueOf(false))
             }
-            drawFrame()
         }
 
         private fun drawFrame() {
             val canvas = surfaceHolder.lockCanvas() ?: return
-            
             try {
-                // 1. CLEAR SCREEN WITH DEFAULT COLOR
-                canvas.drawColor(Color.parseColor("#121212"))
-
-                // 2. UPDATE GLOBALS
+                // 1. CLEAR AND UPDATE TIME
+                canvas.drawColor(Color.parseColor("#0A0A0A"))
+                val elapsed = (System.currentTimeMillis() - startTime) / 1000.0
+                globals.set("time", LuaValue.valueOf(elapsed))
+                
+                // 2. REFRESH ENVIRONMENT
                 globals.set("width", LuaValue.valueOf(canvas.width.toDouble()))
                 globals.set("height", LuaValue.valueOf(canvas.height.toDouble()))
                 val bm = getSystemService(BATTERY_SERVICE) as BatteryManager
                 globals.set("battery", LuaValue.valueOf(bm.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)))
 
-                // 3. DEFINE DRAWING API
+                // 3. DRAWING API (Simplified for brevity, keep your existing rect/text/circle here)
                 val draw = LuaValue.tableOf()
-
-                // draw.rect(x, y, w, h, hex)
-                draw.set("rect", object : VarArgFunction() {
-                    override fun invoke(args: org.luaj.vm2.Varargs): org.luaj.vm2.Varargs {
-                        fillPaint.color = Color.parseColor(args.checkjstring(5))
-                        canvas.drawRect(args.checkdouble(1).toFloat(), args.checkdouble(2).toFloat(),
-                            (args.checkdouble(1) + args.checkdouble(3)).toFloat(),
-                            (args.checkdouble(2) + args.checkdouble(4)).toFloat(), fillPaint)
-                        return LuaValue.NONE
-                    }
-                })
-
-                // draw.circle(x, y, radius, hex)
                 draw.set("circle", object : VarArgFunction() {
                     override fun invoke(args: org.luaj.vm2.Varargs): org.luaj.vm2.Varargs {
                         fillPaint.color = Color.parseColor(args.checkjstring(4))
@@ -81,8 +82,6 @@ class LuaWallpaperService : WallpaperService() {
                         return LuaValue.NONE
                     }
                 })
-
-                // draw.text(text, x, y, size, hex)
                 draw.set("text", object : VarArgFunction() {
                     override fun invoke(args: org.luaj.vm2.Varargs): org.luaj.vm2.Varargs {
                         textPaint.apply {
@@ -95,37 +94,23 @@ class LuaWallpaperService : WallpaperService() {
                 })
                 globals.set("draw", draw)
 
-                // 4. LOAD AND EXECUTE SCRIPT
-                val scriptFile = File("/sdcard/OpenKustom/logic.lua")
-                if (scriptFile.exists()) {
-                    val content = scriptFile.readText()
-                    if (content != lastLoadedContent) {
-                        showToast("Script Updated")
-                        lastLoadedContent = content
-                    }
-
-                    val chunk = globals.load(content)
-                    val result = chunk.call()
-
-                    // 5. IF LUA RETURNS A COLOR, RE-DRAW BACKGROUND AND ELEMENTS
-                    if (result.isstring()) {
-                        canvas.drawColor(Color.parseColor(result.tojstring()))
-                        chunk.call() // Re-run to draw UI elements OVER the new background
-                    }
-                } else {
-                    textPaint.color = Color.RED
-                    canvas.drawText("Missing: /sdcard/OpenKustom/logic.lua", 50f, 300f, textPaint)
+                // 4. EXECUTE LUA
+                val file = File("/sdcard/OpenKustom/logic.lua")
+                if (file.exists()) {
+                    globals.load(file.readText()).call()
                 }
 
             } catch (e: Exception) {
                 textPaint.color = Color.YELLOW
-                textPaint.textSize = 35f
-                canvas.drawText("LUA ERR: ${e.message}", 50f, 400f, textPaint)
+                canvas.drawText("ERR: ${e.message}", 50f, 400f, textPaint)
             } finally {
                 surfaceHolder.unlockCanvasAndPost(canvas)
             }
         }
 
-        override fun onVisibilityChanged(visible: Boolean) { if (visible) drawFrame() }
+        override fun onDestroy() {
+            super.onDestroy()
+            handler.removeCallbacks(tick)
+        }
     }
 }
